@@ -205,6 +205,7 @@ connect();
 document.getElementById('login-inp').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
 
 function doLogin() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { document.getElementById("login-err").textContent = "Подключение..."; setTimeout(doLogin, 300); return; }
   var nick = document.getElementById('login-inp').value.trim();
   if (!nick) return;
   ws.send(JSON.stringify({t:'login', nick:nick}));
