@@ -1,415 +1,322 @@
-import asyncio
 import os
+import asyncio
 from datetime import datetime
-from pywebio import start_server
-from pywebio.input import input, select, textarea
-from pywebio.output import put_html, put_scrollable, output, toast, put_markdown
-from pywebio.session import run_async, run_js
+from nicegui import ui, app, Client
 
-# ─── Глобальное состояние ──────────────────────────────────────────────────────
-users = {}           # {nickname: {'box': output(), 'queue': asyncio.Queue()}}
-chat_history = []    # Список всех публичных сообщений (для истории новых юзеров)
+# ── Состояние ──────────────────────────────────────────────────────────────────
+history: list[dict] = []
+sessions: dict = {}   # {client_id: {nickname, notify_fn, refresh_select}}
 
-TELEGRAM_CSS = """
+
+def ts():
+    return datetime.now().strftime("%H:%M")
+
+
+async def broadcast(msg: dict, skip_id=None, save=True):
+    if save:
+        history.append(msg)
+        if len(history) > 200:
+            history.pop(0)
+    dead = []
+    for cid, s in list(sessions.items()):
+        if cid == skip_id:
+            continue
+        try:
+            await s["notify_fn"](msg)
+        except Exception:
+            dead.append(cid)
+    for d in dead:
+        sessions.pop(d, None)
+
+
+async def refresh_all_selects():
+    nicks = [s["nickname"] for s in sessions.values()]
+    for s in sessions.values():
+        try:
+            await s["refresh_select"](nicks)
+        except Exception:
+            pass
+
+
+# ── CSS ────────────────────────────────────────────────────────────────────────
+STYLES = """
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; }
+  body, html {
+    margin: 0; padding: 0;
+    background: #17212b !important;
+    font-family: 'Inter', sans-serif !important;
+    height: 100%; overflow: hidden;
+  }
+  .nicegui-content { padding: 0 !important; background: #17212b !important; }
+  .q-page { background: #17212b !important; }
 
-:root {
-  --tg-bg:         #17212b;
-  --tg-header:     #1c2b3a;
-  --tg-bubble-in:  #182533;
-  --tg-bubble-out: #2b5278;
-  --tg-accent:     #5288c1;
-  --tg-accent2:    #64b5f6;
-  --tg-text:       #e8edf2;
-  --tg-sub:        #708499;
-  --tg-border:     #232e3c;
-  --tg-private:    #1a3a2a;
-  --tg-private-bd: #2d6b45;
-  --radius:        12px;
-}
+  #tg-header {
+    background: #1c2b3a; border-bottom: 1px solid #232e3c;
+    padding: 10px 16px; display: flex; align-items: center;
+    gap: 12px; height: 58px;
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+  }
+  #tg-avatar {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: linear-gradient(135deg, #5288c1, #3b82f6);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+  }
+  #tg-messages {
+    position: fixed; top: 58px; bottom: 64px;
+    left: 0; right: 0; overflow-y: auto;
+    padding: 10px 12px;
+    background: #17212b;
+  }
+  #tg-messages::-webkit-scrollbar { width: 4px; }
+  #tg-messages::-webkit-scrollbar-thumb { background: #2b3f56; border-radius: 2px; }
+  #tg-input-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: #1c2b3a; border-top: 1px solid #232e3c;
+    padding: 8px 10px; display: flex; align-items: center;
+    gap: 8px; height: 64px; z-index: 50;
+  }
 
-*, *::before, *::after { box-sizing: border-box; }
+  .bw { display: flex; margin-bottom: 4px; animation: pop .15s ease; }
+  @keyframes pop { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:none; } }
+  .bw.out  { justify-content: flex-end; }
+  .bw.in   { justify-content: flex-start; }
+  .bw.priv { justify-content: center; }
+  .bw.sys  { justify-content: center; }
 
-/* ── Глобальный фон — перебиваем Bootstrap/PyWebIO ── */
-html, body,
-.container, .container-fluid,
-#pywebio, #pywebio-body,
-[id^="pywebio"] {
-  background: var(--tg-bg) !important;
-  font-family: 'Inter', sans-serif !important;
-  color: var(--tg-text) !important;
-}
+  .bb {
+    max-width: 72%; padding: 7px 11px 5px;
+    font-size: 14px; line-height: 1.45; word-break: break-word;
+  }
+  .bb.out  { background: #2b5278; border-radius: 14px 14px 3px 14px; }
+  .bb.in   { background: #182533; border: 1px solid #232e3c; border-radius: 14px 14px 14px 3px; }
+  .bb.priv { background: #1a3a2a; border: 1px solid #2d6b45; border-radius: 14px; max-width: 88%; }
+  .bb.sys  { background: rgba(255,255,255,.05); border-radius: 10px; padding: 3px 14px;
+             font-size: 12px; color: #708499; max-width: 90%; text-align: center; }
 
-/* ── Карточки форм ── */
-.card, .card-body {
-  background: var(--tg-header) !important;
-  border: 1px solid var(--tg-border) !important;
-  border-radius: var(--radius) !important;
-  box-shadow: none !important;
-  color: var(--tg-text) !important;
-}
+  .bs { font-size: 12px; font-weight: 600; margin-bottom: 2px; display: block; }
+  .bs.in   { color: #64b5f6; }
+  .bs.priv { color: #4caf76; }
+  .bt { color: #e8edf2; }
+  .btime { font-size: 11px; color: #708499; text-align: right; margin-top: 3px; display: block; }
 
-#footer, .pywebio-logo { display: none !important; }
+  .tg-input .q-field__control {
+    background: #0e1621 !important; border: 1px solid #232e3c !important;
+    border-radius: 22px !important; color: #e8edf2 !important;
+  }
+  .tg-input .q-field__control:focus-within { border-color: #5288c1 !important; }
+  .tg-input input { color: #e8edf2 !important; font-family: 'Inter',sans-serif !important; }
+  .tg-input .q-field__native::placeholder { color: #708499 !important; }
 
-#pywebio-scope-ROOT {
-  max-width: 780px;
-  margin: 0 auto;
-  padding: 0 0 20px !important;
-}
+  .tg-select .q-field__control {
+    background: #0e1621 !important; border: 1px solid #232e3c !important;
+    border-radius: 10px !important;
+  }
+  .tg-select .q-field__native,
+  .tg-select .q-field__label { color: #e8edf2 !important; }
+  .tg-select .q-icon { color: #708499 !important; }
 
-/* ── Шапка ── */
-.tg-header {
-  background: var(--tg-header);
-  border-bottom: 1px solid var(--tg-border);
-  padding: 12px 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  margin-bottom: 8px;
-}
-.tg-header-avatar {
-  width: 42px; height: 42px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--tg-accent), #3b82f6);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 20px; flex-shrink: 0;
-}
-.tg-header-title  { font-size: 15px; font-weight: 600; color: var(--tg-text); }
-.tg-header-status { font-size: 12px; color: var(--tg-accent2); margin-top: 2px; }
+  .q-menu { background: #1c2b3a !important; border: 1px solid #232e3c !important; border-radius: 10px !important; }
+  .q-item { color: #e8edf2 !important; }
+  .q-item:hover { background: #263445 !important; }
 
-/* ── Scrollable (область сообщений) ── */
-.pywebio-scrollable {
-  background: var(--tg-bg) !important;
-  border: 1px solid var(--tg-border) !important;
-  border-radius: var(--radius) !important;
-  min-height: 300px !important;
-  margin: 0 12px 12px !important;
-  padding: 8px 4px !important;
-}
-
-/* ── Пузырьки ── */
-.msg-row {
-  display: flex;
-  margin-bottom: 4px;
-  animation: fadeIn .18s ease;
-}
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(5px); }
-  to   { opacity: 1; transform: none; }
-}
-.msg-row.outgoing { justify-content: flex-end; }
-.msg-row.incoming { justify-content: flex-start; }
-.msg-row.private  { justify-content: center; }
-
-.msg-bubble {
-  max-width: 74%;
-  padding: 7px 11px 5px;
-  border-radius: var(--radius);
-  font-size: 14px;
-  line-height: 1.45;
-  word-break: break-word;
-}
-.msg-row.outgoing .msg-bubble {
-  background: var(--tg-bubble-out);
-  border-bottom-right-radius: 3px;
-}
-.msg-row.incoming .msg-bubble {
-  background: var(--tg-bubble-in);
-  border: 1px solid var(--tg-border);
-  border-bottom-left-radius: 3px;
-}
-.msg-row.private .msg-bubble {
-  background: var(--tg-private);
-  border: 1px solid var(--tg-private-bd);
-  font-size: 13px;
-  max-width: 90%;
-}
-.msg-sender {
-  display: block;
-  font-size: 12px; font-weight: 600;
-  color: var(--tg-accent2);
-  margin-bottom: 3px;
-}
-.msg-row.private .msg-sender { color: #4caf76; }
-.msg-text  { color: var(--tg-text); }
-.msg-time  {
-  display: block; font-size: 11px;
-  color: var(--tg-sub); text-align: right;
-  margin-top: 4px;
-}
-.msg-system {
-  text-align: center; font-size: 12px;
-  color: var(--tg-sub); margin: 6px auto;
-  padding: 3px 14px;
-  background: rgba(255,255,255,.04);
-  border-radius: 10px; display: table;
-}
-
-/* ── Форма: метки ── */
-label, .form-group label, .control-label {
-  color: var(--tg-sub) !important;
-  font-size: 12px !important;
-  font-weight: 500 !important;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-}
-
-/* ── Поля ввода ── */
-input.form-control,
-select.form-control,
-textarea.form-control {
-  background: #0e1621 !important;
-  border: 1px solid var(--tg-border) !important;
-  border-radius: 8px !important;
-  color: var(--tg-text) !important;
-  font-family: 'Inter', sans-serif !important;
-  font-size: 14px !important;
-  padding: 10px 14px !important;
-  transition: border-color .2s;
-}
-input.form-control:focus,
-select.form-control:focus,
-textarea.form-control:focus {
-  border-color: var(--tg-accent) !important;
-  box-shadow: 0 0 0 3px rgba(82,136,193,.25) !important;
-  background: #0e1621 !important;
-}
-/* Цвет текста в option-ах (нужен для Firefox) */
-select.form-control option { background: #1c2b3a; color: var(--tg-text); }
-
-/* ── Кнопки ── */
-.btn-primary, .btn-success {
-  background: var(--tg-accent) !important;
-  border-color: var(--tg-accent) !important;
-  border-radius: 8px !important;
-  font-weight: 600 !important;
-  color: #fff !important;
-  padding: 9px 22px !important;
-  transition: background .2s, transform .1s;
-}
-.btn-primary:hover, .btn-success:hover { background: #4175a8 !important; }
-
-/* Жёлтая кнопка "Сброс" — перекрашиваем */
-.btn-warning, .btn-secondary, .btn-default {
-  background: #263445 !important;
-  border-color: var(--tg-border) !important;
-  color: var(--tg-sub) !important;
-  border-radius: 8px !important;
-  padding: 9px 22px !important;
-}
-.btn-warning:hover, .btn-secondary:hover {
-  background: #2e3f55 !important;
-  color: var(--tg-text) !important;
-}
+  .login-wrap {
+    background: #1c2b3a; border: 1px solid #232e3c;
+    border-radius: 14px; padding: 24px; min-width: 300px;
+  }
+  .login-wrap .q-field__control {
+    background: #0e1621 !important; border: 1px solid #232e3c !important;
+    border-radius: 10px !important;
+  }
+  .login-wrap input { color: #e8edf2 !important; }
+  .login-wrap input::placeholder { color: #708499 !important; }
 </style>
 """
 
-HEADER_HTML = """
-<div class="tg-header">
-  <div class="tg-header-avatar">💬</div>
-  <div class="tg-header-info">
-    <div class="tg-header-title">PyWebIO Chat</div>
-    <div class="tg-header-status" id="online-count">онлайн</div>
-  </div>
-</div>
-"""
+
+def make_bubble_html(msg: dict) -> str:
+    mtype = msg.get("type", "in")
+    text = msg.get("text", "").replace("<", "&lt;").replace(">", "&gt;")
+    sender = msg.get("sender", "").replace("<", "&lt;")
+    time = msg.get("time", "")
+
+    if mtype == "system":
+        return f'<div class="bw sys"><div class="bb sys">{text}</div></div>'
+    if mtype == "outgoing":
+        return f'<div class="bw out"><div class="bb out"><span class="bt">{text}</span><span class="btime">{time}</span></div></div>'
+    if mtype == "private":
+        return f'<div class="bw priv"><div class="bb priv"><span class="bs priv">{sender}</span><span class="bt">{text}</span><span class="btime">{time}</span></div></div>'
+    # incoming
+    return f'<div class="bw in"><div class="bb in"><span class="bs in">{sender}</span><span class="bt">{text}</span><span class="btime">{time}</span></div></div>'
 
 
-def make_bubble(sender, text, msg_type="incoming", time_str=None):
-    """msg_type: incoming | outgoing | private | system"""
-    if time_str is None:
-        time_str = datetime.now().strftime("%H:%M")
-    if msg_type == "system":
-        return f'<div class="msg-system">{text}</div>'
-    sender_html = f'<span class="msg-sender">{sender}</span>' if sender else ""
-    return f"""
-<div class="msg-row {msg_type}">
-  <div class="msg-bubble">
-    {sender_html}
-    <span class="msg-text">{text}</span>
-    <span class="msg-time">{time_str}</span>
-  </div>
-</div>"""
+# ── Страница ───────────────────────────────────────────────────────────────────
+@ui.page("/")
+async def index(client: Client):
+    cid = str(client.id)
+    nick_box = {"v": None}
 
+    ui.add_head_html(STYLES)
 
-def update_online_count():
-    count = len(users)
-    run_js(f"""
-        var el = document.getElementById('online-count');
-        if(el) el.textContent = '{count} онлайн';
-    """)
+    # Шапка
+    ui.html('''
+      <div id="tg-header">
+        <div id="tg-avatar">💬</div>
+        <div>
+          <div style="color:#e8edf2;font-size:15px;font-weight:600;">PyChat</div>
+          <div id="online-lbl" style="color:#64b5f6;font-size:12px;">0 онлайн</div>
+        </div>
+      </div>
+      <div id="tg-messages"></div>
+    ''')
 
+    def push_bubble(msg: dict):
+        raw = make_bubble_html(msg)
+        # Экранируем для JS-строки
+        escaped = raw.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+        ui.run_javascript(f"""
+            (function(){{
+                var m = document.getElementById('tg-messages');
+                if (!m) return;
+                m.insertAdjacentHTML('beforeend', `{escaped}`);
+                m.scrollTop = m.scrollHeight;
+            }})();
+        """)
 
-async def broadcast(html_bubble, skip=None, save_to_history=True):
-    """Рассылает HTML-пузырёк всем (кроме skip). Сохраняет в историю."""
-    if save_to_history:
-        chat_history.append(html_bubble)
-        # Ограничиваем историю до 200 сообщений
-        if len(chat_history) > 200:
-            chat_history.pop(0)
-    for nick, data in users.items():
-        if nick != skip:
-            await data['queue'].put(html_bubble)
+    async def notify_fn(msg: dict):
+        push_bubble(msg)
 
+    # Панель ввода
+    with ui.element("div").style(
+        "position:fixed;bottom:0;left:0;right:0;"
+        "background:#1c2b3a;border-top:1px solid #232e3c;"
+        "padding:8px 10px;display:flex;align-items:center;gap:8px;height:64px;z-index:50;"
+    ):
+        target_sel = ui.select(options=["Всем"], value="Всем") \
+            .props("outlined dense dark") \
+            .classes("tg-select") \
+            .style("width:110px;")
 
-FORCE_STYLES_JS = """
-(function applyDark() {
-  var BG   = '#17212b';
-  var CARD = '#1c2b3a';
-  var BRD  = '#232e3c';
-  var TXT  = '#e8edf2';
-  var ACC  = '#5288c1';
-  var SUB  = '#708499';
+        msg_inp = ui.input(placeholder="Сообщение...") \
+            .props("outlined dense") \
+            .classes("tg-input") \
+            .style("flex:1;")
 
-  function fix() {
-    // body / containers
-    document.body.style.setProperty('background','#17212b','important');
-    document.body.style.setProperty('color', TXT, 'important');
+        async def send():
+            if not nick_box["v"]:
+                return
+            text = msg_inp.value.strip()
+            if not text:
+                return
+            msg_inp.value = ""
+            nick = nick_box["v"]
+            target = target_sel.value
+            now = ts()
 
-    // все карточки
-    document.querySelectorAll('.card,.card-body').forEach(function(el){
-      el.style.setProperty('background', CARD, 'important');
-      el.style.setProperty('border-color', BRD, 'important');
-      el.style.setProperty('color', TXT, 'important');
-    });
-
-    // scrollable — PyWebIO ставит инлайн height/overflow, нам нужно добавить bg
-    document.querySelectorAll('.pywebio-scrollable').forEach(function(el){
-      el.style.setProperty('background', BG, 'important');
-      el.style.setProperty('border', '1px solid '+BRD, 'important');
-      el.style.setProperty('border-radius', '12px', 'important');
-      el.style.setProperty('min-height', '320px', 'important');
-      el.style.setProperty('margin', '0 12px 10px', 'important');
-    });
-
-    // поля
-    document.querySelectorAll('input,select,textarea').forEach(function(el){
-      el.style.setProperty('background', '#0e1621', 'important');
-      el.style.setProperty('color', TXT, 'important');
-      el.style.setProperty('border-color', BRD, 'important');
-    });
-
-    // кнопки
-    document.querySelectorAll('.btn').forEach(function(el){
-      var cls = el.className;
-      if (cls.indexOf('btn-warning') > -1 || cls.indexOf('btn-default') > -1 || cls.indexOf('btn-secondary') > -1) {
-        el.style.setProperty('background', '#263445', 'important');
-        el.style.setProperty('border-color', BRD, 'important');
-        el.style.setProperty('color', SUB, 'important');
-      } else {
-        el.style.setProperty('background', ACC, 'important');
-        el.style.setProperty('border-color', ACC, 'important');
-        el.style.setProperty('color', '#fff', 'important');
-      }
-      el.style.setProperty('border-radius', '8px', 'important');
-      el.style.setProperty('font-weight', '600', 'important');
-    });
-
-    // метки
-    document.querySelectorAll('label,.control-label').forEach(function(el){
-      el.style.setProperty('color', SUB, 'important');
-    });
-  }
-
-  // Запускаем сразу и потом каждые 300мс чтобы поймать динамически добавленные элементы
-  fix();
-  setInterval(fix, 300);
-})();
-"""
-
-async def main():
-    run_js("document.title = 'TG Chat';")
-    put_html(TELEGRAM_CSS)
-    put_html(HEADER_HTML)
-
-    # JS-фиксер инлайн-стилей PyWebIO — запускаем сразу
-    run_js(FORCE_STYLES_JS)
-
-    # ── Логин ──
-    nickname = await input("Твой никнейм:", type="text", required=True,
-                           placeholder="например: Андрей")
-    nickname = nickname.strip()
-    if not nickname:
-        put_html(make_bubble("", "Ник не может быть пустым", "system"))
-        return
-    if nickname in users:
-        put_html(make_bubble("", f"Ник «{nickname}» уже занят!", "system"))
-        return
-
-    # ── Очередь и блок вывода сообщений ──
-    user_box = output()
-    users[nickname] = {'box': user_box, 'queue': asyncio.Queue()}
-
-    # ── Показываем историю чата ──
-    put_scrollable(user_box, height=420, keep_bottom=True)
-
-    # Подождём тик чтобы scrollable успел добавиться в DOM перед историей
-    await asyncio.sleep(0.05)
-
-    if chat_history:
-        for hist_html in chat_history[-50:]:
-            user_box.append(put_html(hist_html))
-
-    # ── Приветствие ──
-    join_html = make_bubble("", f"{nickname} присоединился(-ась) к чату 👋", "system")
-    await broadcast(join_html, skip=nickname, save_to_history=True)
-    user_box.append(put_html(make_bubble("", f"Привет, {nickname}! Это общий чат 🎉", "system")))
-
-    update_online_count()
-
-    # ── Фоновое получение сообщений ──
-    run_async(_receive_loop(nickname, user_box))
-
-    # ── Главный цикл отправки ──
-    try:
-        while True:
-            opts = ["Всем в общий чат"] + [n for n in users if n != nickname]
-            target = await select("Кому:", options=opts)
-            msg = await input("Сообщение:", placeholder="Напиши что-нибудь…", required=True)
-            if not msg.strip():
-                continue
-
-            now = datetime.now().strftime("%H:%M")
-
-            if target == "Всем в общий чат":
-                out_html = make_bubble(nickname, msg, "outgoing", now)
-                in_html  = make_bubble(nickname, msg, "incoming", now)
-                user_box.append(put_html(out_html))
-                await broadcast(in_html, skip=nickname, save_to_history=True)
-                chat_history.append(in_html)
+            if target == "Всем":
+                push_bubble({"type": "outgoing", "sender": nick, "text": text, "time": now})
+                await broadcast({"type": "incoming", "sender": nick, "text": text, "time": now}, skip_id=cid)
             else:
-                priv_to_me   = make_bubble(f"🔒 {nickname} → тебе", msg, "private", now)
-                priv_to_them = make_bubble(f"🔒 {nickname} → {target}", msg, "private", now)
-                user_box.append(put_html(priv_to_them))
-                if target in users:
-                    await users[target]['queue'].put(priv_to_me)
+                push_bubble({"type": "private", "sender": f"🔒 ты → {target}", "text": text, "time": now})
+                tid = next((c for c, s in sessions.items() if s["nickname"] == target), None)
+                if tid:
+                    await sessions[tid]["notify_fn"](
+                        {"type": "private", "sender": f"🔒 {nick} → тебе", "text": text, "time": now}
+                    )
 
-    finally:
-        users.pop(nickname, None)
-        leave_html = make_bubble("", f"{nickname} покинул(-а) чат", "system")
-        await broadcast(leave_html, save_to_history=True)
-        update_online_count()
+        msg_inp.on("keydown.enter", send)
+        ui.button(icon="send", on_click=send) \
+            .props("round unelevated") \
+            .style("background:#5288c1;color:#fff;min-width:42px;height:42px;")
 
+    async def refresh_select(all_nicks):
+        opts = ["Всем"] + [n for n in all_nicks if n != nick_box["v"]]
+        target_sel.options = opts
+        if target_sel.value not in opts:
+            target_sel.value = "Всем"
 
-async def _receive_loop(nickname, user_box):
-    """Слушает очередь и рисует входящие пузырьки. asyncio.sleep(0) освобождает loop."""
-    while nickname in users:
-        try:
-            msg_html = await asyncio.wait_for(
-                users[nickname]['queue'].get(), timeout=0.5
+    # Логин диалог
+    with ui.dialog().props("persistent").style("z-index:200") as dlg:
+        with ui.element("div").classes("login-wrap"):
+            ui.label("👋 Войти в чат").style(
+                "color:#e8edf2;font-size:17px;font-weight:600;margin-bottom:14px;display:block;"
             )
-            user_box.append(put_html(msg_html))
-        except asyncio.TimeoutError:
-            await asyncio.sleep(0)   # ← отпускаем event loop, нет лага на фоне
-        except Exception:
-            break
+            nick_inp = ui.input(placeholder="Введи ник...") \
+                .props("outlined dense") \
+                .style("width:100%;")
+            err_lbl = ui.label("").style("color:#ef5350;font-size:12px;min-height:18px;")
+
+            async def login():
+                nick = nick_inp.value.strip()
+                if not nick:
+                    err_lbl.text = "Введи ник"
+                    return
+                taken = [s["nickname"] for s in sessions.values()]
+                if nick in taken:
+                    err_lbl.text = f"Ник «{nick}» уже занят"
+                    return
+
+                nick_box["v"] = nick
+                sessions[cid] = {
+                    "nickname": nick,
+                    "notify_fn": notify_fn,
+                    "refresh_select": refresh_select,
+                }
+                dlg.close()
+
+                # Показываем историю
+                for m in history[-50:]:
+                    push_bubble(m)
+
+                # Обновляем онлайн/список
+                await _update_online_all()
+                await refresh_all_selects()
+
+                await broadcast(
+                    {"type": "system", "text": f"{nick} присоединился 👋", "time": ts()},
+                    skip_id=cid,
+                )
+                push_bubble({"type": "system", "text": f"Привет, {nick}! 🎉", "time": ts()})
+
+            nick_inp.on("keydown.enter", login)
+            ui.button("Войти →", on_click=login).style(
+                "background:#5288c1;color:#fff;border-radius:8px;"
+                "font-weight:600;width:100%;margin-top:8px;"
+            ).props("unelevated")
+
+    dlg.open()
+
+    # Отключение
+    async def on_disconnect():
+        nick = nick_box.get("v")
+        sessions.pop(cid, None)
+        if nick:
+            await broadcast({"type": "system", "text": f"{nick} вышел из чата", "time": ts()})
+            await _update_online_all()
+            await refresh_all_selects()
+
+    client.on_disconnect(on_disconnect)
+
+
+async def _update_online_all():
+    count = len(sessions)
+    # NiceGUI run_javascript без клиента обновляет все открытые страницы
+    await ui.run_javascript(
+        f"var el=document.getElementById('online-lbl'); if(el) el.textContent='{count} онлайн';"
+    )
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    start_server(main, port=port, host="0.0.0.0", cdn=False, debug=False)
+    ui.run(
+        host="0.0.0.0",
+        port=port,
+        title="PyChat",
+        dark=True,
+        reload=False,
+        storage_secret="pychat-secret-777",
+        favicon="💬",
+    )
   
