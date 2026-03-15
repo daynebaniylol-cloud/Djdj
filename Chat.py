@@ -284,20 +284,22 @@ async def index(client: Client):
         ui.run_javascript(js)
 
     # Слушатель очереди — работает в контексте этого клиента
+    # Слушатель очереди — все JS вызовы внутри контекста клиента
     async def queue_worker():
         while True:
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=30)
-                kind = item[0]
-                if kind == "bubble":
-                    push_bubble(item[1])
-                elif kind == "reaction":
-                    push_reaction(item[1], item[2])
-                elif kind == "js":
-                    ui.run_javascript(item[1])
+                item = await asyncio.wait_for(queue.get(), timeout=25)
+                async with client:
+                    kind = item[0]
+                    if kind == "bubble":
+                        push_bubble(item[1])
+                    elif kind == "reaction":
+                        push_reaction(item[1], item[2])
+                    elif kind == "js":
+                        ui.run_javascript(item[1])
             except asyncio.TimeoutError:
-                # Keepalive пинг чтобы не рвалось соединение
-                ui.run_javascript("void 0;")
+                async with client:
+                    ui.run_javascript("void 0;")
             except Exception:
                 break
 
@@ -456,5 +458,5 @@ if __name__ == "__main__":
         reload=False,
         storage_secret="pychat-777",
         favicon="💬",
-        )
+                    )
     
