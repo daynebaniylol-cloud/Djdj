@@ -256,10 +256,78 @@ async def broadcast(html_bubble, skip=None, save_to_history=True):
             await data['queue'].put(html_bubble)
 
 
+FORCE_STYLES_JS = """
+(function applyDark() {
+  var BG   = '#17212b';
+  var CARD = '#1c2b3a';
+  var BRD  = '#232e3c';
+  var TXT  = '#e8edf2';
+  var ACC  = '#5288c1';
+  var SUB  = '#708499';
+
+  function fix() {
+    // body / containers
+    document.body.style.setProperty('background','#17212b','important');
+    document.body.style.setProperty('color', TXT, 'important');
+
+    // все карточки
+    document.querySelectorAll('.card,.card-body').forEach(function(el){
+      el.style.setProperty('background', CARD, 'important');
+      el.style.setProperty('border-color', BRD, 'important');
+      el.style.setProperty('color', TXT, 'important');
+    });
+
+    // scrollable — PyWebIO ставит инлайн height/overflow, нам нужно добавить bg
+    document.querySelectorAll('.pywebio-scrollable').forEach(function(el){
+      el.style.setProperty('background', BG, 'important');
+      el.style.setProperty('border', '1px solid '+BRD, 'important');
+      el.style.setProperty('border-radius', '12px', 'important');
+      el.style.setProperty('min-height', '320px', 'important');
+      el.style.setProperty('margin', '0 12px 10px', 'important');
+    });
+
+    // поля
+    document.querySelectorAll('input,select,textarea').forEach(function(el){
+      el.style.setProperty('background', '#0e1621', 'important');
+      el.style.setProperty('color', TXT, 'important');
+      el.style.setProperty('border-color', BRD, 'important');
+    });
+
+    // кнопки
+    document.querySelectorAll('.btn').forEach(function(el){
+      var cls = el.className;
+      if (cls.indexOf('btn-warning') > -1 || cls.indexOf('btn-default') > -1 || cls.indexOf('btn-secondary') > -1) {
+        el.style.setProperty('background', '#263445', 'important');
+        el.style.setProperty('border-color', BRD, 'important');
+        el.style.setProperty('color', SUB, 'important');
+      } else {
+        el.style.setProperty('background', ACC, 'important');
+        el.style.setProperty('border-color', ACC, 'important');
+        el.style.setProperty('color', '#fff', 'important');
+      }
+      el.style.setProperty('border-radius', '8px', 'important');
+      el.style.setProperty('font-weight', '600', 'important');
+    });
+
+    // метки
+    document.querySelectorAll('label,.control-label').forEach(function(el){
+      el.style.setProperty('color', SUB, 'important');
+    });
+  }
+
+  // Запускаем сразу и потом каждые 300мс чтобы поймать динамически добавленные элементы
+  fix();
+  setInterval(fix, 300);
+})();
+"""
+
 async def main():
     run_js("document.title = 'TG Chat';")
     put_html(TELEGRAM_CSS)
     put_html(HEADER_HTML)
+
+    # JS-фиксер инлайн-стилей PyWebIO — запускаем сразу
+    run_js(FORCE_STYLES_JS)
 
     # ── Логин ──
     nickname = await input("Твой никнейм:", type="text", required=True,
@@ -277,11 +345,13 @@ async def main():
     users[nickname] = {'box': user_box, 'queue': asyncio.Queue()}
 
     # ── Показываем историю чата ──
-    scrollable_area = put_scrollable(user_box, height=400, keep_bottom=True)
+    put_scrollable(user_box, height=420, keep_bottom=True)
+
+    # Подождём тик чтобы scrollable успел добавиться в DOM перед историей
+    await asyncio.sleep(0.05)
 
     if chat_history:
-        # Загружаем историю в блок
-        for hist_html in chat_history[-50:]:   # последние 50
+        for hist_html in chat_history[-50:]:
             user_box.append(put_html(hist_html))
 
     # ── Приветствие ──
@@ -306,15 +376,12 @@ async def main():
             now = datetime.now().strftime("%H:%M")
 
             if target == "Всем в общий чат":
-                # Себе — outgoing, остальным — incoming
                 out_html = make_bubble(nickname, msg, "outgoing", now)
                 in_html  = make_bubble(nickname, msg, "incoming", now)
                 user_box.append(put_html(out_html))
                 await broadcast(in_html, skip=nickname, save_to_history=True)
-                # Также добавляем outgoing версию в историю
                 chat_history.append(in_html)
             else:
-                # Личное сообщение
                 priv_to_me   = make_bubble(f"🔒 {nickname} → тебе", msg, "private", now)
                 priv_to_them = make_bubble(f"🔒 {nickname} → {target}", msg, "private", now)
                 user_box.append(put_html(priv_to_them))
@@ -322,7 +389,6 @@ async def main():
                     await users[target]['queue'].put(priv_to_me)
 
     finally:
-        # Пользователь отключился
         users.pop(nickname, None)
         leave_html = make_bubble("", f"{nickname} покинул(-а) чат", "system")
         await broadcast(leave_html, save_to_history=True)
