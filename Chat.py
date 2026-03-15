@@ -15,147 +15,154 @@ TELEGRAM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 
 :root {
-  --tg-bg:        #17212b;
-  --tg-sidebar:   #0e1621;
-  --tg-header:    #1c2b3a;
-  --tg-bubble-in: #182533;
-  --tg-bubble-out:#2b5278;
-  --tg-accent:    #5288c1;
-  --tg-accent2:   #64b5f6;
-  --tg-text:      #e8edf2;
-  --tg-sub:       #708499;
-  --tg-border:    #232e3c;
-  --tg-private:   #1a3a2a;
-  --tg-private-border: #2d6b45;
-  --radius:       12px;
+  --tg-bg:         #17212b;
+  --tg-header:     #1c2b3a;
+  --tg-bubble-in:  #182533;
+  --tg-bubble-out: #2b5278;
+  --tg-accent:     #5288c1;
+  --tg-accent2:    #64b5f6;
+  --tg-text:       #e8edf2;
+  --tg-sub:        #708499;
+  --tg-border:     #232e3c;
+  --tg-private:    #1a3a2a;
+  --tg-private-bd: #2d6b45;
+  --radius:        12px;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+*, *::before, *::after { box-sizing: border-box; }
 
-body, #pywebio {
+/* ── Глобальный фон — перебиваем Bootstrap/PyWebIO ── */
+html, body,
+.container, .container-fluid,
+#pywebio, #pywebio-body,
+[id^="pywebio"] {
   background: var(--tg-bg) !important;
   font-family: 'Inter', sans-serif !important;
   color: var(--tg-text) !important;
-  min-height: 100vh;
 }
 
-/* Скрыть стандартные элементы PyWebIO */
+/* ── Карточки форм ── */
+.card, .card-body {
+  background: var(--tg-header) !important;
+  border: 1px solid var(--tg-border) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: none !important;
+  color: var(--tg-text) !important;
+}
+
 #footer, .pywebio-logo { display: none !important; }
 
 #pywebio-scope-ROOT {
   max-width: 780px;
   margin: 0 auto;
-  padding: 0 !important;
+  padding: 0 0 20px !important;
 }
 
-/* ── Шапка чата ── */
+/* ── Шапка ── */
 .tg-header {
   background: var(--tg-header);
   border-bottom: 1px solid var(--tg-border);
-  padding: 14px 20px;
+  padding: 12px 16px;
   display: flex;
   align-items: center;
   gap: 12px;
   position: sticky;
   top: 0;
   z-index: 100;
+  margin-bottom: 8px;
 }
 .tg-header-avatar {
-  width: 40px; height: 40px;
+  width: 42px; height: 42px;
   border-radius: 50%;
   background: linear-gradient(135deg, var(--tg-accent), #3b82f6);
   display: flex; align-items: center; justify-content: center;
-  font-size: 18px; font-weight: 600; color: #fff;
-  flex-shrink: 0;
+  font-size: 20px; flex-shrink: 0;
 }
-.tg-header-info { flex: 1; }
-.tg-header-title { font-size: 15px; font-weight: 600; color: var(--tg-text); }
-.tg-header-status { font-size: 12px; color: var(--tg-accent2); margin-top: 1px; }
+.tg-header-title  { font-size: 15px; font-weight: 600; color: var(--tg-text); }
+.tg-header-status { font-size: 12px; color: var(--tg-accent2); margin-top: 2px; }
 
-/* ── Область сообщений ── */
-.tg-messages-wrap {
-  padding: 10px 12px;
-  min-height: 60px;
+/* ── Scrollable (область сообщений) ── */
+.pywebio-scrollable {
+  background: var(--tg-bg) !important;
+  border: 1px solid var(--tg-border) !important;
+  border-radius: var(--radius) !important;
+  min-height: 300px !important;
+  margin: 0 12px 12px !important;
+  padding: 8px 4px !important;
 }
 
 /* ── Пузырьки ── */
 .msg-row {
   display: flex;
   margin-bottom: 4px;
-  animation: fadeIn .2s ease;
+  animation: fadeIn .18s ease;
 }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
 .msg-row.outgoing { justify-content: flex-end; }
 .msg-row.incoming { justify-content: flex-start; }
 .msg-row.private  { justify-content: center; }
 
 .msg-bubble {
-  max-width: 72%;
-  padding: 8px 12px 6px;
+  max-width: 74%;
+  padding: 7px 11px 5px;
   border-radius: var(--radius);
   font-size: 14px;
   line-height: 1.45;
   word-break: break-word;
-  position: relative;
 }
 .msg-row.outgoing .msg-bubble {
   background: var(--tg-bubble-out);
-  border-bottom-right-radius: 4px;
+  border-bottom-right-radius: 3px;
 }
 .msg-row.incoming .msg-bubble {
   background: var(--tg-bubble-in);
-  border-bottom-left-radius: 4px;
   border: 1px solid var(--tg-border);
+  border-bottom-left-radius: 3px;
 }
 .msg-row.private .msg-bubble {
   background: var(--tg-private);
-  border: 1px solid var(--tg-private-border);
-  border-radius: var(--radius);
+  border: 1px solid var(--tg-private-bd);
   font-size: 13px;
-  max-width: 88%;
+  max-width: 90%;
 }
-
 .msg-sender {
   display: block;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 12px; font-weight: 600;
   color: var(--tg-accent2);
   margin-bottom: 3px;
 }
 .msg-row.private .msg-sender { color: #4caf76; }
-
-.msg-text { color: var(--tg-text); }
-
-.msg-time {
-  display: block;
-  font-size: 11px;
-  color: var(--tg-sub);
-  text-align: right;
+.msg-text  { color: var(--tg-text); }
+.msg-time  {
+  display: block; font-size: 11px;
+  color: var(--tg-sub); text-align: right;
   margin-top: 4px;
 }
-
-/* ── Системное сообщение ── */
 .msg-system {
-  text-align: center;
-  font-size: 12px;
-  color: var(--tg-sub);
-  margin: 8px 0;
-  padding: 4px 12px;
+  text-align: center; font-size: 12px;
+  color: var(--tg-sub); margin: 6px auto;
+  padding: 3px 14px;
   background: rgba(255,255,255,.04);
-  border-radius: 10px;
-  display: inline-block;
-  margin-left: 50%;
-  transform: translateX(-50%);
+  border-radius: 10px; display: table;
 }
 
-/* ── Форма ввода ── */
-.card { background: transparent !important; border: none !important; box-shadow: none !important; }
+/* ── Форма: метки ── */
+label, .form-group label, .control-label {
+  color: var(--tg-sub) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
 
-.form-group label { color: var(--tg-sub) !important; font-size: 12px !important; text-transform: uppercase; letter-spacing: .5px; }
-
-input.form-control, select.form-control, textarea.form-control {
-  background: var(--tg-header) !important;
+/* ── Поля ввода ── */
+input.form-control,
+select.form-control,
+textarea.form-control {
+  background: #0e1621 !important;
   border: 1px solid var(--tg-border) !important;
   border-radius: 8px !important;
   color: var(--tg-text) !important;
@@ -164,25 +171,40 @@ input.form-control, select.form-control, textarea.form-control {
   padding: 10px 14px !important;
   transition: border-color .2s;
 }
-input.form-control:focus, select.form-control:focus, textarea.form-control:focus {
+input.form-control:focus,
+select.form-control:focus,
+textarea.form-control:focus {
   border-color: var(--tg-accent) !important;
-  box-shadow: 0 0 0 3px rgba(82,136,193,.2) !important;
-  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(82,136,193,.25) !important;
+  background: #0e1621 !important;
 }
+/* Цвет текста в option-ах (нужен для Firefox) */
+select.form-control option { background: #1c2b3a; color: var(--tg-text); }
 
-.btn-primary {
+/* ── Кнопки ── */
+.btn-primary, .btn-success {
   background: var(--tg-accent) !important;
-  border: none !important;
+  border-color: var(--tg-accent) !important;
   border-radius: 8px !important;
   font-weight: 600 !important;
-  padding: 9px 20px !important;
+  color: #fff !important;
+  padding: 9px 22px !important;
   transition: background .2s, transform .1s;
 }
-.btn-primary:hover { background: #4a7ab0 !important; transform: translateY(-1px); }
-.btn-primary:active { transform: translateY(0); }
+.btn-primary:hover, .btn-success:hover { background: #4175a8 !important; }
 
-/* scrollable override */
-.pywebio-scrollable { background: transparent !important; border: none !important; }
+/* Жёлтая кнопка "Сброс" — перекрашиваем */
+.btn-warning, .btn-secondary, .btn-default {
+  background: #263445 !important;
+  border-color: var(--tg-border) !important;
+  color: var(--tg-sub) !important;
+  border-radius: 8px !important;
+  padding: 9px 22px !important;
+}
+.btn-warning:hover, .btn-secondary:hover {
+  background: #2e3f55 !important;
+  color: var(--tg-text) !important;
+}
 </style>
 """
 
@@ -324,4 +346,4 @@ async def _receive_loop(nickname, user_box):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     start_server(main, port=port, host="0.0.0.0", cdn=False, debug=False)
-    
+  
