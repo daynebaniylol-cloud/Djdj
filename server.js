@@ -24,6 +24,7 @@ const html = `<!DOCTYPE html>
     html, body {
       margin: 0;
       padding: 0;
+      padding-bottom: 190px;
       overflow: hidden;
       background: #111;
       color: white;
@@ -50,7 +51,7 @@ const html = `<!DOCTYPE html>
     #joyBase {
       position: fixed;
       left: 18px;
-      bottom: 90px;
+      bottom: 210px;
       width: 170px;
       height: 170px;
       border-radius: 50%;
@@ -74,13 +75,14 @@ const html = `<!DOCTYPE html>
       left: 10px;
       right: 10px;
       bottom: 10px;
-      z-index: 6;
-      background: rgba(0,0,0,.65);
+      z-index: 20;
+      background: rgba(0,0,0,.75);
       border-radius: 14px;
       padding: 8px;
+      max-height: 180px;
     }
     #messages {
-      height: 120px;
+      height: 80px;
       overflow-y: auto;
       font-size: 14px;
       margin-bottom: 8px;
