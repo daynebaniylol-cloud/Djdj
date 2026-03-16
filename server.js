@@ -1,500 +1,365 @@
+const express = require("express");
 const http = require("http");
-const crypto = require("crypto");
+const { Server } = require("socket.io");
 
-const PORT = process.env.PORT || 3000;
-const BOT_TOKEN = process.env.BOT_TOKEN || "8799455642:AAE2U-tBn2xsI46n9YkOZIBtf3l7J3iR8R4";
-const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
-const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || "";
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*" }
+});
 
-const players = new Map();
-const sockets = new Set();
+const players = {};
+const chatMessages = [];
 
-function rnd(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function clamp(v, a, b) {
-  return Math.max(a, Math.min(b, v));
-}
-
-function randomColor(id) {
-  const colors = [
-    "#ff4d4f",
-    "#40a9ff",
-    "#73d13d",
-    "#faad14",
-    "#9254de",
-    "#13c2c2",
-    "#eb2f96",
-    "#a0d911"
-  ];
-  return colors[Math.abs(Number(id) || 0) % colors.length];
-}
-
-async function tg(method, data = {}) {
-  const res = await fetch(`${API}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  return res.json();
-}
-
-function sendJson(res, code, obj) {
-  res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(obj));
-}
-
-function sendHtml(res, html) {
-  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  res.end(html);
-}
-
-function alivePlayers() {
-  const now = Date.now();
-  const arr = [];
-  for (const p of players.values()) {
-    if (now - p.last < 30000) arr.push(p);
-  }
-  return arr;
-}
-
-function getState() {
-  return { players: alivePlayers(), t: Date.now() };
-}
-
-function broadcast() {
-  const payload = `data: ${JSON.stringify(getState())}\n\n`;
-  for (const s of sockets) {
-    try {
-      s.write(payload);
-    } catch {}
-  }
-}
-
-function upsertPlayer(id, name) {
-  id = String(id);
-  let p = players.get(id);
-  if (!p) {
-    p = {
-      id,
-      name: String(name || "Player").slice(0, 16),
-      x: rnd(80, 520),
-      y: rnd(80, 520),
-      color: randomColor(id),
-      last: Date.now()
-    };
-    players.set(id, p);
-  } else {
-    p.name = String(name || p.name).slice(0, 16);
-    p.last = Date.now();
-  }
-  return p;
-}
-
-function parseInitDataUnsafe(initData) {
-  const params = new URLSearchParams(initData || "");
-  const userRaw = params.get("user");
-  if (!userRaw) return null;
-
-  try {
-    const user = JSON.parse(userRaw);
-    return {
-      id: String(user.id),
-      name: String(user.username || user.first_name || "Player")
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function handleTelegramUpdate(update) {
-  const msg = update.message;
-
-  if (msg && msg.text === "/start") {
-    const chatId = msg.chat.id;
-
-    const url = PUBLIC_URL || "https://example.onrender.com";
-
-    await tg("sendMessage", {
-      chat_id: chatId,
-      text: "Жми кнопку ниже.",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "Играть",
-              web_app: { url }
-            }
-          ]
-        ]
-      }
-    });
-  }
-}
-
-const html = `<!doctype html>
+const html = `<!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
-  <title>Mini Game</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Brawl Mini</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
+    * { box-sizing: border-box; font-family: Arial, sans-serif; }
     html, body {
       margin: 0;
       padding: 0;
+      overflow: hidden;
       background: #111;
       color: white;
-      font-family: Arial, sans-serif;
-      overflow: hidden;
-      touch-action: none;
     }
-
-    #top {
-      position: fixed;
-      left: 0;
-      top: 0;
-      right: 0;
-      z-index: 10;
-      padding: 10px 12px;
-      background: rgba(0,0,0,0.4);
-      font-size: 14px;
-      backdrop-filter: blur(6px);
-    }
-
-    #c {
+    canvas {
       display: block;
-      width: 100vw;
-      height: 100vh;
-      background: #1b1b1b;
+      background:
+        linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px),
+        #151515;
+      background-size: 72px 72px;
     }
-
-    #joyWrap {
+    #topbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 5;
+      background: rgba(0,0,0,.55);
+      padding: 10px 12px;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    #joyBase {
       position: fixed;
       left: 18px;
-      bottom: 22px;
-      width: 140px;
-      height: 140px;
+      bottom: 90px;
+      width: 170px;
+      height: 170px;
       border-radius: 50%;
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.12);
-      z-index: 20;
+      background: rgba(255,255,255,.12);
+      z-index: 5;
       touch-action: none;
     }
-
-    #joy {
+    #joyStick {
       position: absolute;
-      width: 64px;
-      height: 64px;
-      left: 38px;
-      top: 38px;
+      left: 50%;
+      top: 50%;
+      width: 70px;
+      height: 70px;
+      margin-left: -35px;
+      margin-top: -35px;
       border-radius: 50%;
-      background: rgba(255,255,255,0.28);
+      background: rgba(255,255,255,.28);
     }
-
-    #hint {
+    #chat {
       position: fixed;
-      right: 14px;
-      bottom: 24px;
-      z-index: 20;
-      font-size: 13px;
-      opacity: 0.85;
-      background: rgba(0,0,0,0.35);
-      padding: 8px 10px;
-      border-radius: 12px;
+      left: 10px;
+      right: 10px;
+      bottom: 10px;
+      z-index: 6;
+      background: rgba(0,0,0,.65);
+      border-radius: 14px;
+      padding: 8px;
+    }
+    #messages {
+      height: 120px;
+      overflow-y: auto;
+      font-size: 14px;
+      margin-bottom: 8px;
+      word-break: break-word;
+    }
+    #row {
+      display: flex;
+      gap: 8px;
+    }
+    #input {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 10px;
+      outline: none;
+      font-size: 16px;
+    }
+    #send {
+      padding: 12px 14px;
+      border: none;
+      border-radius: 10px;
+      background: #1ea7ff;
+      color: #fff;
+      font-size: 16px;
     }
   </style>
 </head>
 <body>
-  <div id="top">Загрузка...</div>
-  <canvas id="c"></canvas>
-  <div id="joyWrap"><div id="joy"></div></div>
-  <div id="hint">Двигай кружок слева</div>
+  <div id="topbar">Онлайн: 0 | Ты: Guest</div>
+  <canvas id="game"></canvas>
 
-  <script>
-    const tg = window.Telegram.WebApp;
-    tg.expand();
+  <div id="joyBase"><div id="joyStick"></div></div>
 
-    const topEl = document.getElementById("top");
-    const canvas = document.getElementById("c");
-    const ctx = canvas.getContext("2d");
-    const joyWrap = document.getElementById("joyWrap");
-    const joy = document.getElementById("joy");
+  <div id="chat">
+    <div id="messages"></div>
+    <div id="row">
+      <input id="input" placeholder="Сообщение..." maxlength="120">
+      <button id="send">➤</button>
+    </div>
+  </div>
 
-    const world = { w: 2000, h: 2000 };
-    let state = { players: [] };
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  tg.ready();
+  tg.expand();
+}
 
-    const me = (() => {
-      const unsafe = tg.initDataUnsafe || {};
-      const u = unsafe.user || { id: "guest_" + Math.random(), first_name: "Guest" };
-      return {
-        id: String(u.id),
-        name: String(u.username || u.first_name || "Player").slice(0, 16)
-      };
-    })();
+const tgUser = tg?.initDataUnsafe?.user;
+const myName = tgUser?.username || tgUser?.first_name || "Guest";
 
-    function resize() {
-      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-      canvas.width = Math.floor(window.innerWidth * dpr);
-      canvas.height = Math.floor(window.innerHeight * dpr);
-      canvas.style.width = window.innerWidth + "px";
-      canvas.style.height = window.innerHeight + "px";
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    }
-    resize();
-    addEventListener("resize", resize);
+const socket = io();
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const topbar = document.getElementById("topbar");
+const messages = document.getElementById("messages");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
 
-    const es = new EventSource("/events");
-    es.onmessage = (ev) => {
-      state = JSON.parse(ev.data);
-      topEl.textContent = "Онлайн: " + state.players.length + " | Ты: " + me.name;
-      draw();
-    };
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener("resize", resize);
 
-    let vx = 0;
-    let vy = 0;
+let myId = null;
+let players = {};
+let camera = { x: 0, y: 0 };
 
-    function sendMove() {
-      fetch("/move", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          id: me.id,
-          name: me.name,
-          dx: vx,
-          dy: vy
-        })
-      }).catch(() => {});
-    }
+function addMsg(m) {
+  const d = document.createElement("div");
+  d.textContent = m.name + ": " + m.text;
+  messages.appendChild(d);
+  messages.scrollTop = messages.scrollHeight;
+}
 
-    setInterval(sendMove, 50);
+send.onclick = () => {
+  const text = input.value.trim();
+  if (!text) return;
+  socket.emit("chatMessage", text);
+  input.value = "";
+};
 
-    function getMeState() {
-      return state.players.find(p => String(p.id) === String(me.id)) || {
-        id: me.id,
-        name: me.name,
-        x: world.w / 2,
-        y: world.h / 2,
-        color: "#40a9ff"
-      };
-    }
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") send.click();
+});
 
-    function drawGrid(camX, camY) {
-      ctx.strokeStyle = "rgba(255,255,255,0.05)";
-      ctx.lineWidth = 1;
-      const step = 80;
-      const startX = - (camX % step);
-      const startY = - (camY % step);
+socket.on("init", (data) => {
+  myId = data.id;
+  players = data.players || {};
+  if (data.messages) {
+    messages.innerHTML = "";
+    data.messages.forEach(addMsg);
+  }
+  socket.emit("setName", myName);
+});
 
-      for (let x = startX; x < innerWidth; x += step) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, innerHeight);
-        ctx.stroke();
-      }
+socket.on("players", (p) => {
+  players = p;
+});
 
-      for (let y = startY; y < innerHeight; y += step) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(innerWidth, y);
-        ctx.stroke();
-      }
-    }
+socket.on("playerJoined", (p) => {
+  players[p.id] = p;
+});
 
-    function draw() {
-      ctx.clearRect(0, 0, innerWidth, innerHeight);
+socket.on("playerLeft", (id) => {
+  delete players[id];
+});
 
-      const meState = getMeState();
-      const camX = meState.x - innerWidth / 2;
-      const camY = meState.y - innerHeight / 2;
+socket.on("playerMoved", ({ id, x, y }) => {
+  if (players[id]) {
+    players[id].x = x;
+    players[id].y = y;
+  }
+});
 
-      drawGrid(camX, camY);
+socket.on("chatMessage", addMsg);
 
-      for (const p of state.players) {
-        const sx = p.x - camX;
-        const sy = p.y - camY;
+const joyBase = document.getElementById("joyBase");
+const joyStick = document.getElementById("joyStick");
 
-        if (sx < -100 || sy < -100 || sx > innerWidth + 100 || sy > innerHeight + 100) continue;
+let joyActive = false;
+let joyDx = 0;
+let joyDy = 0;
 
-        ctx.beginPath();
-        ctx.arc(sx, sy, 24, 0, Math.PI * 2);
-        ctx.fillStyle = p.color || "#999";
-        ctx.fill();
+function setJoy(clientX, clientY) {
+  const rect = joyBase.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
 
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = String(p.id) === String(me.id) ? "#fff" : "rgba(255,255,255,0.45)";
-        ctx.stroke();
+  let dx = clientX - cx;
+  let dy = clientY - cy;
 
-        ctx.font = "bold 14px Arial";
-        ctx.textAlign = "center";
-        ctx.fillStyle = "#fff";
-        ctx.fillText(p.name || "Player", sx, sy - 34);
-      }
-    }
+  const dist = Math.hypot(dx, dy);
+  const max = 50;
 
-    let dragging = false;
-    let baseX = 70;
-    let baseY = 70;
+  if (dist > max) {
+    dx = dx / dist * max;
+    dy = dy / dist * max;
+  }
 
-    function setKnob(x, y) {
-      const dx = x - baseX;
-      const dy = y - baseY;
-      const dist = Math.hypot(dx, dy);
-      const max = 42;
+  joyDx = dx / max;
+  joyDy = dy / max;
 
-      let kx = dx;
-      let ky = dy;
-      if (dist > max) {
-        kx = dx / dist * max;
-        ky = dy / dist * max;
-      }
+  joyStick.style.marginLeft = (-35 + dx) + "px";
+  joyStick.style.marginTop = (-35 + dy) + "px";
+}
 
-      joy.style.left = (38 + kx) + "px";
-      joy.style.top = (38 + ky) + "px";
+function resetJoy() {
+  joyDx = 0;
+  joyDy = 0;
+  joyStick.style.marginLeft = "-35px";
+  joyStick.style.marginTop = "-35px";
+}
 
-      vx = kx / max;
-      vy = ky / max;
-    }
+joyBase.addEventListener("touchstart", (e) => {
+  joyActive = true;
+  const t = e.touches[0];
+  setJoy(t.clientX, t.clientY);
+}, { passive: true });
 
-    function resetKnob() {
-      joy.style.left = "38px";
-      joy.style.top = "38px";
-      vx = 0;
-      vy = 0;
-    }
+joyBase.addEventListener("touchmove", (e) => {
+  if (!joyActive) return;
+  const t = e.touches[0];
+  setJoy(t.clientX, t.clientY);
+}, { passive: true });
 
-    joyWrap.addEventListener("pointerdown", (e) => {
-      dragging = true;
-      joyWrap.setPointerCapture(e.pointerId);
-      const r = joyWrap.getBoundingClientRect();
-      baseX = r.width / 2;
-      baseY = r.height / 2;
-      setKnob(e.clientX - r.left, e.clientY - r.top);
-    });
+joyBase.addEventListener("touchend", () => {
+  joyActive = false;
+  resetJoy();
+}, { passive: true });
 
-    joyWrap.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      const r = joyWrap.getBoundingClientRect();
-      setKnob(e.clientX - r.left, e.clientY - r.top);
-    });
+joyBase.addEventListener("touchcancel", () => {
+  joyActive = false;
+  resetJoy();
+}, { passive: true });
 
-    function endDrag() {
-      dragging = false;
-      resetKnob();
-    }
+function loop() {
+  requestAnimationFrame(loop);
 
-    joyWrap.addEventListener("pointerup", endDrag);
-    joyWrap.addEventListener("pointercancel", endDrag);
-    joyWrap.addEventListener("pointerleave", () => {});
+  const me = players[myId];
+  if (me) {
+    me.x += joyDx * 4;
+    me.y += joyDy * 4;
 
-    draw();
-  </script>
+    socket.emit("move", { x: me.x, y: me.y });
+
+    camera.x = me.x - canvas.width / 2;
+    camera.y = me.y - canvas.height / 2;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  for (const id in players) {
+    const p = players[id];
+    const sx = p.x - camera.x;
+    const sy = p.y - camera.y;
+
+    ctx.beginPath();
+    ctx.arc(sx, sy, 34, 0, Math.PI * 2);
+    ctx.fillStyle = id === myId ? "#4aa8ff" : "#ff5252";
+    ctx.fill();
+
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(255,255,255,.7)";
+    ctx.stroke();
+
+    ctx.fillStyle = "white";
+    ctx.font = "bold 18px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(p.name || "Guest", sx, sy - 44);
+  }
+
+  topbar.textContent = "Онлайн: " + Object.keys(players).length + " | Ты: " + (players[myId]?.name || myName);
+}
+loop();
+</script>
 </body>
 </html>`;
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, "http://localhost");
+io.on("connection", (socket) => {
+  players[socket.id] = {
+    id: socket.id,
+    x: 300 + Math.random() * 300,
+    y: 300 + Math.random() * 300,
+    name: "Guest"
+  };
 
-  if (req.method === "GET" && url.pathname === "/") {
-    return sendHtml(res, html);
-  }
+  socket.emit("init", {
+    id: socket.id,
+    players,
+    messages: chatMessages
+  });
 
-  if (req.method === "GET" && url.pathname === "/health") {
-    return sendJson(res, 200, { ok: true });
-  }
+  socket.broadcast.emit("playerJoined", players[socket.id]);
+  io.emit("players", players);
 
-  if (req.method === "GET" && url.pathname === "/setwebhook") {
-    if (!PUBLIC_URL) {
-      return sendJson(res, 400, {
-        ok: false,
-        error: "No RENDER_EXTERNAL_URL found"
-      });
-    }
+  socket.on("setName", (name) => {
+    if (!players[socket.id]) return;
+    players[socket.id].name = String(name || "Guest").slice(0, 20);
+    io.emit("players", players);
+  });
 
-    const hook = await tg("setWebhook", {
-      url: PUBLIC_URL + "/telegram"
-    });
+  socket.on("move", ({ x, y }) => {
+    if (!players[socket.id]) return;
+    players[socket.id].x = x;
+    players[socket.id].y = y;
+    socket.broadcast.emit("playerMoved", { id: socket.id, x, y });
+  });
 
-    return sendJson(res, 200, hook);
-  }
+  socket.on("chatMessage", (text) => {
+    if (!players[socket.id]) return;
+    const clean = String(text || "").trim().slice(0, 120);
+    if (!clean) return;
 
-  if (req.method === "POST" && url.pathname === "/telegram") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", async () => {
-      try {
-        const update = JSON.parse(body || "{}");
-        await handleTelegramUpdate(update);
-      } catch {}
-      sendJson(res, 200, { ok: true });
-    });
-    return;
-  }
+    const msg = {
+      name: players[socket.id].name,
+      text: clean
+    };
 
-  if (req.method === "GET" && url.pathname === "/events") {
-    res.writeHead(200, {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      "connection": "keep-alive",
-      "access-control-allow-origin": "*"
-    });
-    res.write(`data: ${JSON.stringify(getState())}\n\n`);
-    sockets.add(res);
+    chatMessages.push(msg);
+    if (chatMessages.length > 50) chatMessages.shift();
 
-    const timer = setInterval(() => {
-      try {
-        res.write(`: ping\n\n`);
-      } catch {}
-    }, 15000);
+    io.emit("chatMessage", msg);
+  });
 
-    req.on("close", () => {
-      clearInterval(timer);
-      sockets.delete(res);
-    });
-    return;
-  }
-
-  if (req.method === "POST" && url.pathname === "/move") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
-      try {
-        const data = JSON.parse(body || "{}");
-        const p = upsertPlayer(data.id, data.name);
-
-        const speed = 8;
-        const dx = Number(data.dx) || 0;
-        const dy = Number(data.dy) || 0;
-
-        p.x = clamp(p.x + dx * speed, 24, worldMax().w - 24);
-        p.y = clamp(p.y + dy * speed, 24, worldMax().h - 24);
-        p.last = Date.now();
-
-        broadcast();
-        sendJson(res, 200, { ok: true, player: p });
-      } catch {
-        sendJson(res, 400, { ok: false });
-      }
-    });
-    return;
-  }
-
-  sendJson(res, 404, { ok: false, error: "Not found" });
+  socket.on("disconnect", () => {
+    delete players[socket.id];
+    io.emit("playerLeft", socket.id);
+    io.emit("players", players);
+  });
 });
 
-function worldMax() {
-  return { w: 2000, h: 2000 };
-}
+app.get("/", (req, res) => {
+  res.send(html);
+});
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, p] of players) {
-    if (now - p.last > 60000) players.delete(id);
-  }
-  broadcast();
-}, 5000);
-
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log("Server started on port", PORT);
+  console.log("site started on " + PORT);
 });
